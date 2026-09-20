@@ -1,6 +1,6 @@
 # 3D 目标检测（相机-点云多模态融合）
 
-Ascend NPU 3D 目标检测应用，支持 PointPillars / CLOCS / HMFI 多模型接入。
+Ascend NPU 3D 目标检测应用，支持 PointPillars / CLOCS / HMFI / LoGoNet 多模型接入。
 
 ## 1. 目录结构
 
@@ -66,6 +66,30 @@ autonomous_driving/
 ```
 
 > 算子接入说明：`indice_conv`（Ascend C）与 `common/ops/` 下各 fusionrepo 算子均随仓库统一构建以 wheel（`ops_multimodal_fusion`）交付。装好 wheel 后模型侧直接 `import ops_multimodal_fusion` 即自动 load `.so` 并注册 `torch.ops.ops_multimodal_fusion.*`（`common/patches/mmcv_sparse_conv.py` 即经此路径调用 `indice_conv` / `get_indice_pairs_subm_lookup`）；不装 wheel 时相关路径自动回退纯 torch，不影响 CPU 正确性。
+
+LoGoNet 新增目录（4.4 节）：
+
+```
+autonomous_driving/
+├── backbone/                             # 感知主干接口（图像/点云特征提取）
+│   ├── image_feature_interface.py
+│   └── point_cloud_perception_interface.py
+├── fusion_unit/symmetric/feature/
+│   └── block/mlp_fusion_block.py         # MLP 融合块
+├── utils/
+│   └── pcdet_kitti_writer.py             # KITTI 预测写盘（pcdet 口径）
+└── model/logonet/                        # LoGoNet 模型（2D+3D 特征级融合）
+    ├── eval_logonet_npu.py               # 端到端 3769 帧评估入口
+    ├── sparse_conv_npu.py                # mmcv 稀疏卷积 CUDA→NPU patch
+    ├── kernel_bridge.py                  # AscendC 算子桥接层
+    ├── logonet_framework.py              # LoGoNet 融合框架
+    ├── initialization/build_logonet_system.py
+    └── module/                           # 7 个融合子模块
+```
+
+`common/ops/` 同步新增 3 个 fusionrepo 融合算子注册
+（feature_fusion_weighted_sum / linear_projection / transformer_ffn_block，
+feature_concatenation / multihead_attention_fusion 已随 4.3 HMFI 入库）。
 
 ## 2. 环境配置
 
@@ -359,3 +383,66 @@ CPU 与 NPU 一致（差异 <0.01pp）。全量 3769 帧耗时（当前加速路
 
 > 备注：82.51/83.50 为 (0.25, 0.7) 操作点结果，该点附近对阈值敏感；默认阈值 (0.05, 0.1) 为 78.78/82.15（`results/hmfi/sweep_avg568_default.json`）。
 
+### 4.4 LoGoNet
+
+KITTI 3D Car 检测，2D（Faster R-CNN）+ 3D（PV-RCNN）特征级融合。2D/3D 检测器用官方预训练权重并冻结，LoGoNet 融合框架执行两种尺度的跨模态融合：全局（BEV 特征与图像特征注意力融合）+ 局部（ROI 网格池化后逐 proposal 融合与精修）。
+
+> **算法来源**：LoGoNet 融合算法参考论文 *LoGoNet: Towards Accurate 3D Object Detection with Local-to-Global Cross-Modal Fusion*（CVPR 2023）。本应用的 `model/logonet/`（logonet_framework + module）、`fusion_unit/`、`backbone/` 等按参考实现 FusionRepo（多模态融合框架开源项目，`model/logonet/` 等目录结构同源）收编；`model/logonet/sparse_conv_npu.py`、`kernel_bridge.py`、`eval_logonet_npu.py` 为 Ascend NPU 适配层原生实现；2D/3D 检测器使用 mmdet/mmdet3d 官方预训练权重。
+
+#### 4.4.1 改动内容
+
+| 文件 | 改动 |
+|---|---|
+| `model/logonet/sparse_conv_npu.py` | mmcv 稀疏卷积（`get_indice_pairs`/`indice_conv` 等仅 CUDA C 扩展）纯 PyTorch NPU 重实现；含 hard voxelize、FPS、ball_query、nms_rotated 等 10+ 个 CUDA 算子的 NPU 替代 |
+| `model/logonet/kernel_bridge.py` | AscendC 原生算子桥接（依赖 `ops/sparse_conv`、`ops/nms_bev_iou` 的 whl）：`sparse_conv_subm` 融合子流形稀疏卷积、`subm_rulebook`/`reg_rulebook` 拓扑生成、`nms_bev_iou` 旋转框 IoU |
+| `model/logonet/eval_logonet_npu.py` | 新增：端到端 3769 帧评估入口（含陈旧 pred 防护、事后重建 annos 评估） |
+| `common/ops/`（5 个新增文件） | fusionrepo 融合算子注册：feature_concatenation / feature_fusion_weighted_sum / linear_projection / multihead_attention_fusion / transformer_ffn_block |
+
+#### 4.4.2 环境依赖
+
+- `ops/sparse_conv` 与 `ops/nms_bev_iou` 的算子 whl（本仓 `build.sh` 编译产物）
+- mmdet 3.3.0 / mmdet3d 1.4.0 / mmcv 2.2.0（NPU 适配，见 2.2/2.3 节）
+
+#### 4.4.3 推理验证
+
+权重下载：
+
+```bash
+mkdir -p checkpoints/pv_rcnn checkpoints/logonet
+# 3D 检测器（mmdet3d 官方 PV-RCNN）
+wget -O checkpoints/pv_rcnn/pv_rcnn_8xb2-80e_kitti-3d-3class.pth \
+  https://download.openmmlab.com/mmdetection3d/v1.1.0_models/pv_rcnn/pv_rcnn_8xb2-80e_kitti-3d-3class/pv_rcnn_8xb2-80e_kitti-3d-3class_20221117_234428-b384d22f.pth
+# 2D 检测器（mmdet 官方 Faster R-CNN，与 4.2 CLOCS 共用）
+wget -O checkpoints/logonet/faster_rcnn_r50_caffe_fpn_1x_coco_bbox_mAP-0.378_20200504_180032-c5925ee5.pth \
+  https://download.openmmlab.com/mmdetection/v2.0/faster_rcnn/faster_rcnn_r50_caffe_fpn_1x_coco/faster_rcnn_r50_caffe_fpn_1x_coco_bbox_mAP-0.378_20200504_180032-c5925ee5.pth
+# LoGoNet 融合权重（FusionRepo 官方发布）
+#   https://drive.google.com/file/d/1W0yIp6YS6x9yD9g83YjJumCSLX6u0Soa/view
+#   下载后放 checkpoints/logonet/logonet_fusion_trained_best_loss.pth
+```
+
+```bash
+# 全量 3769 帧 val（KITTI 数据放 data/kitti/training/{image_2,velodyne,calib,label_2}）
+python applications/autonomous_driving/model/logonet/eval_logonet_npu.py --device npu:0
+python applications/autonomous_driving/model/logonet/eval_logonet_npu.py --device npu:0 --max-frames 50   # 冒烟
+```
+
+#### 4.4.4 结果
+
+官方 CUDA 训练的 PV-RCNN/Faster R-CNN 权重 + FusionRepo 发布的 LoGoNet 融合权重，KITTI Car 全量 3769 帧 val，官方 mmdet3d kitti_eval 口径。NPU 单帧推理耗时 51 ms（含稀疏卷积 AscendC 算子加速）。
+
+IoU≥0.7（严格口径）：
+
+| 指标 | easy | moderate | hard |
+|---|---|---|---|
+| 3D AP11 | 72.86 | 60.75 | 56.07 |
+| 3D AP40 | 72.64 | 60.98 | 55.31 |
+| BEV AP40 | 79.33 | 69.92 | 64.76 |
+
+IoU≥0.5（宽松口径）：
+
+| 指标 | easy | moderate | hard |
+|---|---|---|---|
+| 3D AP11 | 84.97 | 78.62 | 73.58 |
+| 3D AP40 | 87.65 | 79.76 | 74.58 |
+
+与论文/FusionRepo 报告值（3D AP 91.80/85.06/80.74）差距明显，原因：点云 backbone 为 mmdet3d 官方 3 类预训练 PV-RCNN（仅 RPN proposals，未用 LoGoNet 原版全量训练的检测器），融合权重在其上仅做轻量适配训练。本表用于说明 NPU 管线正确性与稀疏卷积算子精度（与 CUDA 路径逐算子对拍见 `tests/sparse_conv/`）。
