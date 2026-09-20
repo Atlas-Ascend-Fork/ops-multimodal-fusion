@@ -127,6 +127,7 @@
 | sparse_mask_projection | `torch.ops.ops_multimodal_fusion.sparse_mask_projection(Tensor sparse_indices, Tensor sparse_values, Tensor mask_indices) -> Tensor` | - | - | ✓ |
 | spherical_bessel_j0 | `torch.ops.ops_multimodal_fusion.spherical_bessel_j0(Tensor x) -> Tensor` | - | - | ✓ |
 | sqrt | `torch.ops.ops_multimodal_fusion.sqrt(Tensor x) -> Tensor` | - | - | ✓ |
+| subm_conv | `torch.ops.ops_multimodal_fusion.subm_conv(Tensor features, Tensor neighbor, Tensor weight, Tensor? bias) -> Tensor` | - | - | ✓ |
 | sum | `torch.ops.ops_multimodal_fusion.sum(Tensor x, int dim, bool keepdim) -> Tensor` | - | - | ✓ |
 | swi_glu | `torch.ops.ops_multimodal_fusion.swi_glu(Tensor x) -> Tensor` | - | - | ✓ |
 | take | `torch.ops.ops_multimodal_fusion.take(Tensor self, Tensor index) -> Tensor` | - | - | ✓ |
@@ -138,3 +139,4 @@
 | upsample_trilinear3d | `torch.ops.ops_multimodal_fusion.upsample_trilinear3d(Tensor input, int[3] output_size, bool align_corners=False, float scales_d=-1., float scales_h=-1., float scales_w=-1.) -> Tensor` | - | - | ✓ |
 | weight_norm | `torch.ops.ops_multimodal_fusion.weight_norm(Tensor v, Tensor g, int dim) -> Tensor` | - | - | ✓ |
 | zeta | `torch.ops.ops_multimodal_fusion.zeta(Tensor x, Tensor q) -> Tensor` | - | - | ✓ |
+| nms_bev_iou | `torch.ops.ops_multimodal_fusion.nms_bev_iou(Tensor boxes_bev) -> Tensor` | - | - | ✓ |
